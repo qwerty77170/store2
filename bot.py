@@ -1,7 +1,7 @@
 import logging
 import sqlite3
-from aiogram import Bot, Dispatcher, types
-from aiogram.filters import Command, Text
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
 from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.fsm.context import FSMContext
@@ -11,9 +11,9 @@ import asyncio
 # Настройка логов
 logging.basicConfig(level=logging.INFO)
 
-# Токен бота (получите у @BotFather)
+# Конфигурация
 API_TOKEN = "ВАШ_TELEGRAM_BOT_TOKEN"
-ADMIN_ID = 123456789  # Ваш ID в Telegram (узнать можно у @userinfobot)
+ADMIN_ID = 123456789  # Ваш ID в Telegram
 
 # Инициализация бота
 bot = Bot(token=API_TOKEN, parse_mode=ParseMode.HTML)
@@ -26,93 +26,85 @@ class AdminStates(StatesGroup):
 
 # Подключение к SQLite
 def get_db():
-    conn = sqlite3.connect('shop.db')
-    return conn
+    return sqlite3.connect('shop.db')
 
-# Создание таблиц при первом запуске
+# Инициализация БД
 def init_db():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS products (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            price INTEGER NOT NULL,
-            description TEXT,
-            login TEXT,
-            password TEXT
-        )
-    ''')
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            product_id INTEGER NOT NULL,
-            status TEXT DEFAULT 'pending',
-            FOREIGN KEY (product_id) REFERENCES products (id)
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                price INTEGER NOT NULL,
+                description TEXT,
+                login TEXT,
+                password TEXT
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS orders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                product_id INTEGER NOT NULL,
+                status TEXT DEFAULT 'pending',
+                FOREIGN KEY (product_id) REFERENCES products (id)
+            )
+        ''')
 
 init_db()
 
 # ===== КЛАВИАТУРЫ ===== #
 def get_main_keyboard(is_admin=False):
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🛒 Каталог", callback_data="catalog")],
-        *([[InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")]] if is_admin else [])
-    ])
-    return keyboard
+    buttons = [
+        [InlineKeyboardButton(text="🛒 Каталог", callback_data="catalog")]
+    ]
+    if is_admin:
+        buttons.append([InlineKeyboardButton(text="⚙️ Админ-панель", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_admin_keyboard():
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+    return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📦 Добавить товар", callback_data="add_product")],
         [InlineKeyboardButton(text="🗑 Удалить товар", callback_data="delete_product")],
         [InlineKeyboardButton(text="📊 Список товаров", callback_data="list_products")],
         [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
     ])
-    return keyboard
 
 def get_products_keyboard():
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, name, price FROM products")
-    products = cursor.fetchall()
-    conn.close()
-
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        *[[InlineKeyboardButton(text=f"{product[1]} - {product[2]}₽", callback_data=f"buy_{product[0]}")] for product in products],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")]
-    ])
-    return keyboard
+    with get_db() as conn:
+        products = conn.execute("SELECT id, name, price FROM products").fetchall()
+    
+    buttons = [
+        [InlineKeyboardButton(text=f"{p[1]} - {p[2]}₽", callback_data=f"buy_{p[0]}")] 
+        for p in products
+    ]
+    buttons.append([InlineKeyboardButton(text="🔙 Назад", callback_data="main_menu")])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # ===== ОСНОВНЫЕ КОМАНДЫ ===== #
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
-    is_admin = (message.from_user.id == ADMIN_ID)
     await message.answer(
         "🛒 Добро пожаловать в магазин!",
-        reply_markup=get_main_keyboard(is_admin)
+        reply_markup=get_main_keyboard(message.from_user.id == ADMIN_ID)
     )
 
 # ===== ОБРАБОТКА КНОПОК ===== #
-@dp.callback_query(Text("main_menu"))
+@dp.callback_query(F.data == "main_menu")
 async def main_menu(call: types.CallbackQuery):
-    is_admin = (call.from_user.id == ADMIN_ID)
     await call.message.edit_text(
         "🛒 Главное меню",
-        reply_markup=get_main_keyboard(is_admin)
+        reply_markup=get_main_keyboard(call.from_user.id == ADMIN_ID)
     )
 
-@dp.callback_query(Text("catalog"))
+@dp.callback_query(F.data == "catalog")
 async def show_catalog(call: types.CallbackQuery):
     await call.message.edit_text(
         "📦 Выберите товар:",
         reply_markup=get_products_keyboard()
     )
 
-@dp.callback_query(Text("admin_panel"))
+@dp.callback_query(F.data == "admin_panel")
 async def admin_panel(call: types.CallbackQuery):
     if call.from_user.id == ADMIN_ID:
         await call.message.edit_text(
@@ -123,7 +115,7 @@ async def admin_panel(call: types.CallbackQuery):
         await call.answer("⛔ Доступ запрещен!")
 
 # ===== АДМИН-ПАНЕЛЬ ===== #
-@dp.callback_query(Text("add_product"))
+@dp.callback_query(F.data == "add_product")
 async def add_product_start(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id == ADMIN_ID:
         await call.message.edit_text(
@@ -139,58 +131,43 @@ async def add_product_start(call: types.CallbackQuery, state: FSMContext):
 async def add_product_finish(message: types.Message, state: FSMContext):
     try:
         name, price, desc, login, password = map(str.strip, message.text.split("|"))
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute(
-            "INSERT INTO products (name, price, description, login, password) VALUES (?, ?, ?, ?, ?)",
-            (name, int(price), desc, login, password)
-        )
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            conn.execute(
+                "INSERT INTO products VALUES (NULL, ?, ?, ?, ?, ?)",
+                (name, int(price), desc, login, password)
         await message.answer("✅ Товар добавлен!")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
     finally:
         await state.clear()
 
-@dp.callback_query(Text("list_products"))
+@dp.callback_query(F.data == "list_products")
 async def list_products(call: types.CallbackQuery):
     if call.from_user.id == ADMIN_ID:
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT id, name, price FROM products")
-        products = cursor.fetchall()
-        conn.close()
-
+        with get_db() as conn:
+            products = conn.execute("SELECT id, name, price FROM products").fetchall()
+        
         if not products:
             await call.answer("🗃 Товаров нет!")
             return
 
-        text = "📦 Список товаров:\n\n"
-        for product in products:
-            text += f"{product[0]}. {product[1]} - {product[2]}₽\n"
-
+        text = "📦 Список товаров:\n\n" + "\n".join(
+            f"{p[0]}. {p[1]} - {p[2]}₽" for p in products
+        )
         await call.message.edit_text(text, reply_markup=get_admin_keyboard())
-    else:
-        await call.answer("⛔ Доступ запрещен!")
 
-@dp.callback_query(Text("delete_product"))
+@dp.callback_query(F.data == "delete_product")
 async def delete_product_start(call: types.CallbackQuery, state: FSMContext):
     if call.from_user.id == ADMIN_ID:
         await call.message.edit_text("✏️ Введите ID товара для удаления:")
         await state.set_state(AdminStates.wait_product_delete)
-    else:
-        await call.answer("⛔ Доступ запрещен!")
 
 @dp.message(AdminStates.wait_product_delete)
 async def delete_product_finish(message: types.Message, state: FSMContext):
     try:
         product_id = int(message.text)
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM products WHERE id = ?", (product_id,))
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
         await message.answer("✅ Товар удален!")
     except Exception as e:
         await message.answer(f"❌ Ошибка: {e}")
@@ -198,49 +175,42 @@ async def delete_product_finish(message: types.Message, state: FSMContext):
         await state.clear()
 
 # ===== ПОКУПКА ТОВАРА ===== #
-@dp.callback_query(Text(startswith="buy_"))
+@dp.callback_query(F.data.startswith("buy_"))
 async def process_buy(call: types.CallbackQuery):
     product_id = int(call.data.split("_")[1])
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name, price FROM products WHERE id = ?", (product_id,))
-    product = cursor.fetchone()
-    conn.close()
+    with get_db() as conn:
+        product = conn.execute(
+            "SELECT name, price FROM products WHERE id = ?", 
+            (product_id,)
+        ).fetchone()
 
     if not product:
         await call.answer("❌ Товар не найден!")
         return
-
-    pay_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="✅ Оплатить (тест)", callback_data=f"pay_{product_id}")]
-    ])
 
     await call.message.edit_text(
         f"💳 Оформление заказа:\n\n"
         f"Товар: {product[0]}\n"
         f"Цена: {product[1]}₽\n\n"
         "Нажмите кнопку ниже для симуляции оплаты:",
-        reply_markup=pay_keyboard
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+            InlineKeyboardButton(text="✅ Оплатить (тест)", callback_data=f"pay_{product_id}")
+        ]])
     )
 
-@dp.callback_query(Text(startswith="pay_"))
+@dp.callback_query(F.data.startswith("pay_"))
 async def process_pay(call: types.CallbackQuery):
     product_id = int(call.data.split("_")[1])
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT name, price, login, password FROM products WHERE id = ?", (product_id,))
-    product = cursor.fetchone()
-    conn.close()
-
-    if not product:
-        await call.answer("❌ Товар не найден!")
-        return
+    with get_db() as conn:
+        product = conn.execute(
+            "SELECT name, price, login, password FROM products WHERE id = ?", 
+            (product_id,)
+        ).fetchone()
 
     await call.message.edit_text(
         f"✅ Оплата прошла успешно!\n\n"
         f"Товар: {product[0]}\n"
         f"Цена: {product[1]}₽\n\n"
-        "Данные для входа:\n"
         f"Логин: <code>{product[2]}</code>\n"
         f"Пароль: <code>{product[3]}</code>"
     )
